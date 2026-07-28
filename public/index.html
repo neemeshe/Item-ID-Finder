@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Item ID Finder</title>
+<style>
+  :root {
+    --bg: #F4F6F8; --panel: #FFFFFF; --ink: #141A26; --sub: #5B6472; --line: #E1E5EA;
+    --navy: #1F3A5F; --navyDeep: #12253F; --amber: #B45309; --green: #166534;
+    --greenBg: #EAF4EC; --amberBg: #FDF3E7; --navyBg: #EAF0F7;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background: var(--bg); font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink); }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 28px 20px 60px; }
+  .headerRow { display:flex; align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:8px; margin-bottom:6px; }
+  .eyebrow { font-size:12px; letter-spacing:.12em; text-transform:uppercase; color:var(--sub); font-weight:600; }
+  h1 { font-size:26px; font-weight:700; margin:2px 0 0; color:var(--navyDeep); letter-spacing:-0.01em; }
+  .sub { color: var(--sub); font-size:14px; margin:0 0 20px; max-width:560px; }
+  .pill { font-size:12px; display:inline-flex; align-items:center; gap:6px; color:var(--navy); background:var(--navyBg); padding:5px 10px; border-radius:20px; font-weight:600; white-space:nowrap; }
+  .searchWrap { position:relative; margin-bottom:18px; }
+  .searchWrap svg { position:absolute; left:14px; top:50%; transform:translateY(-50%); }
+  #searchInput { width:100%; box-sizing:border-box; padding:13px 14px 13px 42px; font-size:15px; border:1px solid var(--line); border-radius:9px; background:var(--panel); outline:none; color:var(--ink); }
+  .resultRow { background:var(--panel); border:1px solid var(--line); border-radius:9px; padding:12px 14px; display:flex; gap:14px; align-items:flex-start; margin-bottom:8px; }
+  .idBtn { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:13px; letter-spacing:.02em; background:var(--navyBg); color:var(--navyDeep); border:1px solid var(--line); border-radius:6px; padding:6px 9px; cursor:pointer; display:flex; align-items:center; gap:6px; white-space:nowrap; flex-shrink:0; }
+  .resultBody { flex:1; min-width:0; }
+  .resultName { font-weight:600; font-size:14px; }
+  .resultDesc { font-size:13px; color:var(--sub); margin-top:1px; }
+  .chips { display:flex; gap:6px; margin-top:6px; flex-wrap:wrap; }
+  .chip { font-size:11px; background:#F1F2F4; color:var(--sub); padding:2px 8px; border-radius:20px; }
+  .tag { font-size:11px; font-weight:600; padding:4px 8px; border-radius:20px; white-space:nowrap; }
+  .empty { text-align:center; padding:36px 16px; color:var(--sub); background:var(--panel); border:1px dashed var(--line); border-radius:10px; }
+  .empty b { color:var(--ink); }
+  .footNote { text-align:center; margin-top:30px; }
+  .footNote a { color: var(--sub); font-size:12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="headerRow">
+    <div>
+      <div class="eyebrow">Master Data</div>
+      <h1>Item ID Finder</h1>
+    </div>
+    <span class="pill" id="statusPill">loading…</span>
+  </div>
+  <p class="sub">Search by item name, description, spec, or partial ID before requesting a new item code.</p>
+
+  <div class="searchWrap">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#5B6472" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+    <input id="searchInput" placeholder="e.g. stainless pipe 25mm, or partial item ID…">
+  </div>
+
+  <div id="resultsArea"></div>
+
+  <div class="footNote"><a href="/admin.html">Data owner? Update the list here →</a></div>
+</div>
+
+<script>
+function esc(s){ const d=document.createElement('div'); d.textContent = String(s??''); return d.innerHTML; }
+
+function tagColors(tag){
+  if (tag==='Exact ID match' || tag==='ID contains query') return {bg:'var(--greenBg)', fg:'var(--green)'};
+  if (tag==='Strong match') return {bg:'var(--navyBg)', fg:'var(--navy)'};
+  if (tag==='Possible match (typo?)') return {bg:'var(--amberBg)', fg:'var(--amber)'};
+  return {bg:'#F1F2F4', fg:'var(--sub)'};
+}
+
+function copyId(id, btn){
+  navigator.clipboard.writeText(id).then(() => {
+    const old = btn.innerHTML;
+    btn.innerHTML = '✓ ' + esc(id);
+    setTimeout(() => { btn.innerHTML = old; }, 1200);
+  }).catch(()=>{});
+}
+
+let itemCount = 0;
+
+async function refreshStatus(){
+  try {
+    const res = await fetch('/api/status');
+    const data = await res.json();
+    itemCount = data.count;
+    const dateStr = data.updatedAt ? new Date(data.updatedAt).toLocaleDateString(undefined,{month:'short', day:'numeric', year:'numeric'}) : '—';
+    document.getElementById('statusPill').textContent = `${data.count.toLocaleString()} items · updated ${dateStr}`;
+  } catch(e) {
+    document.getElementById('statusPill').textContent = 'Could not reach server';
+  }
+}
+
+async function doSearch(query){
+  const area = document.getElementById('resultsArea');
+  if (!query){
+    area.innerHTML = `<div style="color:var(--sub); font-size:13px; text-align:center; padding:30px 0;">${itemCount.toLocaleString()} items loaded — start typing to search.</div>`;
+    return;
+  }
+  let results = [];
+  try {
+    const res = await fetch('/api/search?q=' + encodeURIComponent(query));
+    const data = await res.json();
+    results = data.results || [];
+  } catch(e) {
+    area.innerHTML = `<div class="empty"><b>Couldn't reach the server</b><br>Check your connection and try again.</div>`;
+    return;
+  }
+  if (!results.length){
+    area.innerHTML = `<div class="empty"><b>No close match for "${esc(query)}"</b><br>Try fewer or different keywords (material, size, spec) instead of the full description.<br>If still nothing, it's likely genuinely new — go ahead and request an item ID.</div>`;
+    return;
+  }
+  area.innerHTML = results.map(r => {
+    const tc = tagColors(r._tag);
+    return `<div class="resultRow">
+      <button class="idBtn" onclick="copyId('${esc(r.id).replace(/'/g,"\\'")}', this)">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        ${esc(r.id)}
+      </button>
+      <div class="resultBody">
+        <div class="resultName">${esc(r.name)}</div>
+        ${r.description ? `<div class="resultDesc">${esc(r.description)}</div>` : ''}
+        <div class="chips">
+          ${r.category ? `<span class="chip">${esc(r.category)}</span>` : ''}
+          ${r.uom ? `<span class="chip">${esc(r.uom)}</span>` : ''}
+          ${r.sheet ? `<span class="chip">${esc(r.sheet)}</span>` : ''}
+        </div>
+      </div>
+      <span class="tag" style="background:${tc.bg}; color:${tc.fg};">${esc(r._tag)}</span>
+    </div>`;
+  }).join('');
+}
+
+document.getElementById('searchInput').addEventListener('input', (e) => {
+  clearTimeout(window.__debounce);
+  const v = e.target.value.trim();
+  window.__debounce = setTimeout(() => doSearch(v), 200);
+});
+
+refreshStatus();
+doSearch('');
+</script>
+</body>
+</html>

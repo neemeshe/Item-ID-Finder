@@ -1,0 +1,16 @@
+{
+  "name": "item-id-finder",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Live item master search tool with a password-protected admin update page",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

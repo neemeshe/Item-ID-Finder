@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Item ID Finder — Admin</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  :root {
+    --bg: #F4F6F8; --panel: #FFFFFF; --ink: #141A26; --sub: #5B6472; --line: #E1E5EA;
+    --navy: #1F3A5F; --navyDeep: #12253F; --amber: #B45309; --green: #166534;
+    --greenBg: #EAF4EC; --amberBg: #FDF3E7; --navyBg: #EAF0F7;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background: var(--bg); font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink); }
+  .wrap { max-width: 780px; margin: 0 auto; padding: 28px 20px 60px; }
+  h1 { font-size:22px; font-weight:700; margin:2px 0 16px; color:var(--navyDeep); }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:20px; margin-bottom:20px; }
+  input[type=password], input[type=text] { padding:9px 10px; border-radius:7px; border:1px solid var(--line); font-size:14px; width:100%; box-sizing:border-box; }
+  button.btn { background:var(--navy); color:#fff; border:none; border-radius:8px; padding:10px 16px; font-size:14px; font-weight:600; cursor:pointer; }
+  button.btnGhost { background:#fff; color:var(--navy); border:1px solid var(--line); border-radius:8px; padding:10px 16px; font-size:14px; font-weight:600; cursor:pointer; }
+  .toolbar { display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
+  .hint { font-size:13px; color:var(--sub); }
+  .statusMsg { margin-top:12px; font-size:13px; padding:8px 10px; border-radius:6px; display:flex; align-items:center; gap:6px; }
+  .statusInfo { background: var(--navyBg); color: var(--navy); }
+  .statusWarn { background: var(--amberBg); color: var(--amber); }
+  .statusGood { background: var(--greenBg); color: var(--green); }
+  textarea#pasteBox { width:100%; box-sizing:border-box; padding:10px; font-size:13px; font-family: ui-monospace, monospace; border:1px solid var(--line); border-radius:8px; resize:vertical; margin-top:8px; }
+  .mapGrid { display:grid; grid-template-columns: repeat(auto-fit, minmax(160px,1fr)); gap:10px; margin: 12px 0; }
+  .mapGrid label { font-size:12px; color:var(--sub); }
+  .mapGrid select { display:block; width:100%; margin-top:4px; padding:7px 8px; border-radius:6px; border:1px solid var(--line); font-size:13px; color:var(--ink); background:#fff; }
+  #app { display:none; }
+  a.back { color: var(--sub); font-size:13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Item ID Finder — Admin</h1>
+
+  <div class="panel" id="loginPanel">
+    <p class="hint" style="margin-top:0;">Enter the admin password to update the live item list.</p>
+    <div class="toolbar">
+      <input type="password" id="pwInput" placeholder="Admin password" style="max-width:260px;">
+      <button class="btn" onclick="login()">Unlock</button>
+    </div>
+    <div id="loginStatus"></div>
+  </div>
+
+  <div id="app">
+    <div class="panel">
+      <p class="hint" style="margin-top:0;">Current live list: <span id="currentInfo">loading…</span></p>
+      <div class="toolbar">
+        <button class="btn" id="uploadBtn">Upload file</button>
+        <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" style="display:none;">
+        <button class="btnGhost" id="pasteBtn">Paste from Sheets</button>
+      </div>
+      <div id="pasteArea" style="display:none;">
+        <p class="hint">Select your range in Google Sheets/Excel (include the header row), copy, then paste below.</p>
+        <textarea id="pasteBox" rows="6" placeholder="Paste copied cells here…"></textarea>
+        <div class="toolbar" style="margin-top:8px;">
+          <button class="btn" id="parsePasteBtn">Use pasted data</button>
+          <button class="btnGhost" id="cancelPasteBtn">Cancel</button>
+        </div>
+      </div>
+      <div id="mappingArea"></div>
+      <div id="statusMsg"></div>
+    </div>
+  </div>
+
+  <a class="back" href="/">← Back to search</a>
+</div>
+
+<script>
+let ADMIN_PW = '';
+
+async function login(){
+  const pw = document.getElementById('pwInput').value;
+  const statusEl = document.getElementById('loginStatus');
+  try {
+    const res = await fetch('/api/admin/login', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({password: pw}) });
+    if (res.ok){
+      ADMIN_PW = pw;
+      document.getElementById('loginPanel').style.display = 'none';
+      document.getElementById('app').style.display = 'block';
+      refreshCurrentInfo();
+    } else {
+      statusEl.innerHTML = '<div class="statusMsg statusWarn">Incorrect password.</div>';
+    }
+  } catch(e) {
+    statusEl.innerHTML = '<div class="statusMsg statusWarn">Could not reach the server.</div>';
+  }
+}
+document.getElementById('pwInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') login(); });
+
+async function refreshCurrentInfo(){
+  try {
+    const res = await fetch('/api/status');
+    const data = await res.json();
+    const dateStr = data.updatedAt ? new Date(data.updatedAt).toLocaleString() : '—';
+    document.getElementById('currentInfo').textContent = `${data.count.toLocaleString()} items, last updated ${dateStr}`;
+  } catch(e) {}
+}
+
+// ---------------- shared parsing/mapping logic (same as other versions of this tool) ----------------
+function normalize(s){ return (s||'').toString().toLowerCase().replace(/[^a-z0-9]+/g,' ').replace(/\s+/g,' ').trim(); }
+function guessMapping(headers){
+  const lower = headers.map(h => (h||'').toLowerCase().trim());
+  const findExact = (values) => { const i = lower.findIndex(h => values.includes(h)); return i>=0 ? headers[i] : ''; };
+  const find = (keywords) => { const i = lower.findIndex(h => h && keywords.some(k => h.includes(k))); return i>=0 ? headers[i] : ''; };
+  const nonBlank = headers.filter(Boolean);
+  return {
+    id: find(['item id','item code','itemid','item_no','code','sku']) || nonBlank[0] || '',
+    name: findExact(['item','item name','material name']) || find(['item name','material name','name']) || nonBlank[1] || nonBlank[0] || '',
+    description: find(['description','desc','spec']) || '',
+    category: find(['category','group','type']) || '',
+    uom: find(['uom','unit','size','side']) || '',
+  };
+}
+function getHeaders(sheet, headerRow){ return (sheet.rawRows[headerRow-1]||[]).map(h => String(h ?? '').trim()); }
+function getDataRows(sheet, headerRow){ return sheet.rawRows.slice(headerRow).filter(r => r.some(c => String(c ?? '').trim() !== '')); }
+
+let uploadState = null;
+
+function unionHeadersFor(selected, sheets, headerRowBySheet){
+  const out=[]; const seen=new Set();
+  for(const s of sheets){
+    if(!selected.includes(s.name)) continue;
+    for(const h of getHeaders(s, headerRowBySheet[s.name])) if(h && !seen.has(h)){ seen.add(h); out.push(h); }
+  }
+  return out;
+}
+function esc(s){ const d=document.createElement('div'); d.textContent = String(s??''); return d.innerHTML; }
+
+function openMapping(sheets, defaultHeaderRow){
+  const headerRowBySheet = {};
+  sheets.forEach(s => { headerRowBySheet[s.name] = Math.min(defaultHeaderRow, s.rawRows.length); });
+  const biggest = sheets.reduce((a,b) => (b.rawRows.length > a.rawRows.length ? b : a), sheets[0]);
+  const selected = [biggest.name];
+  const headers = getHeaders(biggest, headerRowBySheet[biggest.name]);
+  uploadState = { sheets, selected, headerRowBySheet, mapping: guessMapping(headers) };
+  renderMapping();
+}
+
+function renderMapping(){
+  const area = document.getElementById('mappingArea');
+  if (!uploadState){ area.innerHTML=''; return; }
+  const { sheets, selected, headerRowBySheet, mapping } = uploadState;
+  const multiSheet = sheets.length > 1;
+  const chosen = sheets.filter(s => selected.includes(s.name));
+  const totalRows = chosen.reduce((n,s) => n + getDataRows(s, headerRowBySheet[s.name]).length, 0);
+  const uHeaders = unionHeadersFor(selected, sheets, headerRowBySheet);
+  const fieldLabels = { id:'Item ID', name:'Item Name', description:'Description / Spec', category:'Category', uom:'UoM' };
+
+  let sheetListHtml = sheets.map(s => {
+    const hr = headerRowBySheet[s.name];
+    const headersHere = getHeaders(s, hr).filter(Boolean);
+    const isSel = selected.includes(s.name);
+    return `<div style="margin-bottom:6px;">
+      <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;">
+        <input type="checkbox" ${isSel?'checked':''} onchange="toggleSheet('${s.name.replace(/'/g,"\\'")}')">
+        <span style="font-weight:600;">${esc(s.name)}</span>
+        <span style="color:var(--sub);">${getDataRows(s,hr).length.toLocaleString()} rows · ${headersHere.length} columns</span>
+        <span style="margin-left:auto; color:var(--sub); display:flex; align-items:center; gap:4px;">header row
+          <input type="number" min="1" max="${s.rawRows.length}" value="${hr}" style="width:50px; padding:2px 5px; border-radius:5px; border:1px solid var(--line);" onchange="setHeaderRow('${s.name.replace(/'/g,"\\'")}', this.value)">
+        </span>
+      </label>
+      ${isSel ? `<div style="font-size:11px; color:var(--sub); margin-left:24px;">Row ${hr}: ${esc(headersHere.slice(0,6).join(', ')) || '(no header text found)'}</div>` : ''}
+    </div>`;
+  }).join('');
+
+  const fieldSelectsHtml = Object.keys(fieldLabels).map(f => `
+    <label>${fieldLabels[f]}${(f==='id'||f==='name')?' <span style="color:var(--amber)">*</span>':''}
+      <select onchange="setMappingField('${f}', this.value)">
+        ${f!=='id'&&f!=='name' ? `<option value="">— none —</option>` : ''}
+        ${uHeaders.map(h => `<option value="${esc(h)}" ${mapping[f]===h?'selected':''}>${esc(h)}</option>`).join('')}
+      </select>
+    </label>`).join('');
+
+  area.innerHTML = `
+    <div style="border:1px solid var(--line); border-radius:8px; padding:10px; margin-top:12px;">
+      <div style="font-size:12px; color:var(--sub); margin-bottom:8px; font-weight:600;">
+        ${multiSheet ? `This file has ${sheets.length} tabs — pick one, or check several to combine them` : '1 tab found'}
+      </div>
+      ${sheetListHtml}
+    </div>
+    <div class="mapGrid">${fieldSelectsHtml}</div>
+    <div class="toolbar">
+      <button class="btn" onclick="confirmSave()">Publish ${totalRows.toLocaleString()} rows live</button>
+      <button class="btnGhost" onclick="cancelUpload()">Cancel</button>
+    </div>
+  `;
+}
+
+function toggleSheet(name){
+  const isSel = uploadState.selected.includes(name);
+  uploadState.selected = isSel ? uploadState.selected.filter(n=>n!==name) : [...uploadState.selected, name];
+  const uHeaders = unionHeadersFor(uploadState.selected, uploadState.sheets, uploadState.headerRowBySheet);
+  const guessed = guessMapping(uHeaders);
+  for (const f of Object.keys(uploadState.mapping)){
+    if (uploadState.mapping[f] && !uHeaders.includes(uploadState.mapping[f])) uploadState.mapping[f] = guessed[f] || '';
+  }
+  renderMapping();
+}
+function setHeaderRow(name, value){
+  const sheet = uploadState.sheets.find(s=>s.name===name);
+  uploadState.headerRowBySheet[name] = Math.max(1, Math.min(Number(value)||1, sheet.rawRows.length));
+  const uHeaders = unionHeadersFor(uploadState.selected, uploadState.sheets, uploadState.headerRowBySheet);
+  const guessed = guessMapping(uHeaders);
+  for (const f of Object.keys(uploadState.mapping)){
+    if (uploadState.mapping[f] && !uHeaders.includes(uploadState.mapping[f])) uploadState.mapping[f] = guessed[f] || '';
+  }
+  renderMapping();
+}
+function setMappingField(field, value){ uploadState.mapping[field] = value; }
+function cancelUpload(){ uploadState = null; renderMapping(); setStatus('', 'info'); }
+
+function setStatus(msg, kind){
+  const el = document.getElementById('statusMsg');
+  if (!msg){ el.innerHTML=''; return; }
+  el.innerHTML = `<div class="statusMsg ${kind==='good'?'statusGood':kind==='warn'?'statusWarn':'statusInfo'}">${esc(msg)}</div>`;
+}
+
+async function confirmSave(){
+  const { sheets, selected, headerRowBySheet, mapping } = uploadState;
+  if (!mapping.id || !mapping.name){ setStatus('Please map both Item ID and Item Name before publishing.', 'warn'); return; }
+  const chosen = sheets.filter(s => selected.includes(s.name));
+  let skipped = [];
+  const newItems = [];
+  for (const sheet of chosen){
+    const hr = headerRowBySheet[sheet.name];
+    const headers = getHeaders(sheet, hr);
+    const dataRows = getDataRows(sheet, hr);
+    const idI = headers.indexOf(mapping.id), nameI = headers.indexOf(mapping.name);
+    if (idI<0 || nameI<0){ skipped.push(sheet.name); continue; }
+    const descI = headers.indexOf(mapping.description), catI = headers.indexOf(mapping.category), uomI = headers.indexOf(mapping.uom);
+    for (const r of dataRows){
+      const id = String(r[idI] ?? '').trim();
+      if (!id) continue;
+      newItems.push({ id, name:String(r[nameI]??'').trim(), description: descI>=0?String(r[descI]??'').trim():'', category: catI>=0?String(r[catI]??'').trim():'', uom: uomI>=0?String(r[uomI]??'').trim():'', sheet: sheet.name });
+    }
+  }
+
+  setStatus('Publishing…', 'info');
+  try {
+    const res = await fetch('/api/admin/save', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ password: ADMIN_PW, items: newItems })
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok){ setStatus(data.error || 'Failed to publish.', 'warn'); return; }
+    const skipNote = skipped.length ? ` (${skipped.join(', ')} skipped — missing the mapped column at that header row)` : '';
+    setStatus(`Published ${data.count.toLocaleString()} items — live for everyone now${skipNote}.`, 'good');
+    uploadState = null;
+    renderMapping();
+    refreshCurrentInfo();
+  } catch(e){
+    setStatus('Could not reach the server to publish.', 'warn');
+  }
+}
+
+document.getElementById('uploadBtn').addEventListener('click', () => document.getElementById('fileInput').click());
+document.getElementById('fileInput').addEventListener('change', (e) => {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (evt) => {
+    try {
+      const data = new Uint8Array(evt.target.result);
+      const wb = XLSX.read(data, { type:'array' });
+      const sheets = wb.SheetNames.map(name => {
+        const rawRows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header:1, defval:'' });
+        return { name, rawRows };
+      }).filter(s => s.rawRows.length > 0);
+      if (!sheets.length){ setStatus('That file looks empty.', 'warn'); return; }
+      openMapping(sheets, 9);
+      setStatus('', 'info');
+    } catch(err){
+      setStatus('Could not read that file. Use a .xlsx, .xls, or .csv export.', 'warn');
+    }
+  };
+  reader.readAsArrayBuffer(file);
+  e.target.value = '';
+});
+document.getElementById('pasteBtn').addEventListener('click', () => { document.getElementById('pasteArea').style.display = 'block'; });
+document.getElementById('cancelPasteBtn').addEventListener('click', () => {
+  document.getElementById('pasteArea').style.display = 'none';
+  document.getElementById('pasteBox').value = '';
+});
+document.getElementById('parsePasteBtn').addEventListener('click', () => {
+  const text = document.getElementById('pasteBox').value.replace(/\r\n/g,'\n').replace(/\r/g,'\n');
+  const lines = text.split('\n').filter(l => l.length > 0);
+  if (!lines.length){ setStatus('Nothing to parse — paste some cells first.', 'warn'); return; }
+  const delimiter = lines[0].includes('\t') ? '\t' : ',';
+  const rawRows = lines.map(l => l.split(delimiter).map(c => c.trim()));
+  openMapping([{ name:'Pasted data', rawRows }], 1);
+  document.getElementById('pasteArea').style.display = 'none';
+  document.getElementById('pasteBox').value = '';
+});
+</script>
+</body>
+</html>
