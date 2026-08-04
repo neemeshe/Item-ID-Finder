@@ -161,6 +161,7 @@ async function doSearch(query){
         <div class="chips">
           ${r.category ? `<span class="chip">${esc(r.category)}</span>` : ''}
           ${r.uom ? `<span class="chip">${esc(r.uom)}</span>` : ''}
+          ${r.costCenter ? `<span class="chip">${esc(r.costCenter)}</span>` : ''}
           ${r.sheet ? `<span class="chip">${esc(r.sheet)}</span>` : ''}
         </div>
       </div>

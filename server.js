@@ -76,7 +76,7 @@ function runSearch(items, rawQuery) {
   for (const item of items) {
     const idNorm = normalize(item.id);
     const nameNorm = normalize(item.name);
-    const text = normalize([item.id, item.name, item.description, item.category, item.uom].join(' '));
+    const text = normalize([item.id, item.name, item.description, item.category, item.uom, item.costCenter].join(' '));
     let score = 0, tag = '';
     if (idNorm === q) { score = 1000; tag = 'Exact ID match'; }
     else if (q.length >= 3 && idNorm.includes(q)) { score += 200; tag = 'ID contains query'; }
@@ -159,6 +159,7 @@ app.post('/api/admin/save', (req, res) => {
       description: String(it.description || '').trim(),
       category: String(it.category || '').trim(),
       uom: String(it.uom || '').trim(),
+      costCenter: String(it.costCenter || '').trim(),
       sheet: String(it.sheet || '').trim(),
       country,
     }))

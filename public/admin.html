@@ -126,6 +126,7 @@ function guessMapping(headers){
     description: find(['description','desc','spec']) || '',
     category: find(['category','group','type']) || '',
     uom: find(['uom','unit','size','side']) || '',
+    costCenter: find(['cost center','cost_center','tag.c_cost_center']) || '',
   };
 }
 function getHeaders(sheet, headerRow){ return (sheet.rawRows[headerRow-1]||[]).map(h => String(h ?? '').trim()); }
@@ -161,7 +162,7 @@ function renderMapping(){
   const chosen = sheets.filter(s => selected.includes(s.name));
   const totalRows = chosen.reduce((n,s) => n + getDataRows(s, headerRowBySheet[s.name]).length, 0);
   const uHeaders = unionHeadersFor(selected, sheets, headerRowBySheet);
-  const fieldLabels = { id:'Item ID', name:'Item Name', description:'Description / Spec', category:'Category', uom:'UoM' };
+  const fieldLabels = { id:'Item ID', name:'Item Name', description:'Description / Spec', category:'Category', uom:'UoM', costCenter:'Cost Center' };
 
   let sheetListHtml = sheets.map(s => {
     const hr = headerRowBySheet[s.name];
@@ -246,11 +247,11 @@ async function confirmSave(){
     const dataRows = getDataRows(sheet, hr);
     const idI = headers.indexOf(mapping.id), nameI = headers.indexOf(mapping.name);
     if (idI<0 || nameI<0){ skipped.push(sheet.name); continue; }
-    const descI = headers.indexOf(mapping.description), catI = headers.indexOf(mapping.category), uomI = headers.indexOf(mapping.uom);
+    const descI = headers.indexOf(mapping.description), catI = headers.indexOf(mapping.category), uomI = headers.indexOf(mapping.uom), ccI = headers.indexOf(mapping.costCenter);
     for (const r of dataRows){
       const id = String(r[idI] ?? '').trim();
       if (!id) continue;
-      newItems.push({ id, name:String(r[nameI]??'').trim(), description: descI>=0?String(r[descI]??'').trim():'', category: catI>=0?String(r[catI]??'').trim():'', uom: uomI>=0?String(r[uomI]??'').trim():'', sheet: sheet.name });
+      newItems.push({ id, name:String(r[nameI]??'').trim(), description: descI>=0?String(r[descI]??'').trim():'', category: catI>=0?String(r[catI]??'').trim():'', uom: uomI>=0?String(r[uomI]??'').trim():'', costCenter: ccI>=0?String(r[ccI]??'').trim():'', sheet: sheet.name });
     }
   }
 
