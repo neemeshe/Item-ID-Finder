@@ -15,12 +15,17 @@ app.use(express.static(path.join(__dirname, 'public')));
 // local disk is NOT guaranteed to persist across restarts/redeploys. Test this by
 // saving data, letting the service go idle, then reloading before you rely on it —
 // see README.md for how to switch to a real database if you need stronger guarantees.
+const COUNTRIES = ['Philippines', 'India'];
+
 function loadData() {
   try {
     const raw = fs.readFileSync(DATA_FILE, 'utf8');
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    if (!parsed.updatedByCountry) parsed.updatedByCountry = { Philippines: parsed.updatedAt || null, India: null };
+    if (!Array.isArray(parsed.items)) parsed.items = [];
+    return parsed;
   } catch (e) {
-    return { items: [], updatedAt: null };
+    return { items: [], updatedByCountry: { Philippines: null, India: null } };
   }
 }
 function saveData(data) {
@@ -107,25 +112,44 @@ function runSearch(items, rawQuery) {
 
 // ---------------- API ----------------
 app.get('/api/status', (req, res) => {
-  res.json({ count: store.items.length, updatedAt: store.updatedAt });
+  const country = (req.query.country || '').toString();
+  if (country && COUNTRIES.includes(country)) {
+    const count = store.items.filter(it => it.country === country).length;
+    res.json({ count, updatedAt: store.updatedByCountry[country] || null, scope: country });
+  } else {
+    res.json({
+      count: store.items.length,
+      updatedAt: null,
+      scope: 'all',
+      byCountry: COUNTRIES.map(c => ({
+        country: c,
+        count: store.items.filter(it => it.country === c).length,
+        updatedAt: store.updatedByCountry[c] || null,
+      })),
+    });
+  }
 });
 
 app.get('/api/search', (req, res) => {
   const q = (req.query.q || '').toString();
-  res.json({ results: runSearch(store.items, q) });
+  const country = (req.query.country || '').toString();
+  const pool = (country && COUNTRIES.includes(country)) ? store.items.filter(it => it.country === country) : store.items;
+  res.json({ results: runSearch(pool, q) });
 });
 
 // Admin: verify password only (used by the admin page to unlock the upload UI)
 app.post('/api/admin/login', (req, res) => {
   const { password } = req.body || {};
-  if (password === ADMIN_PASSWORD) res.json({ ok: true });
+  if (password === ADMIN_PASSWORD) res.json({ ok: true, countries: COUNTRIES });
   else res.status(401).json({ ok: false, error: 'Incorrect password' });
 });
 
-// Admin: replace the item list. Expects { password, items: [{id,name,description,category,uom,sheet}] }
+// Admin: replace ONLY the given country's items, leaving the other country's data untouched.
+// Expects { password, country, items: [{id,name,description,category,uom,sheet}] }
 app.post('/api/admin/save', (req, res) => {
-  const { password, items } = req.body || {};
+  const { password, country, items } = req.body || {};
   if (password !== ADMIN_PASSWORD) return res.status(401).json({ ok: false, error: 'Incorrect password' });
+  if (!COUNTRIES.includes(country)) return res.status(400).json({ ok: false, error: `country must be one of: ${COUNTRIES.join(', ')}` });
   if (!Array.isArray(items)) return res.status(400).json({ ok: false, error: 'items must be an array' });
 
   const cleaned = items
@@ -136,12 +160,16 @@ app.post('/api/admin/save', (req, res) => {
       category: String(it.category || '').trim(),
       uom: String(it.uom || '').trim(),
       sheet: String(it.sheet || '').trim(),
+      country,
     }))
     .filter(it => it.id);
 
-  store = { items: cleaned, updatedAt: new Date().toISOString() };
+  const nowIso = new Date().toISOString();
+  // keep every item NOT belonging to this country, replace this country's items with the new batch
+  store.items = store.items.filter(it => it.country !== country).concat(cleaned);
+  store.updatedByCountry[country] = nowIso;
   saveData(store);
-  res.json({ ok: true, count: cleaned.length, updatedAt: store.updatedAt });
+  res.json({ ok: true, count: cleaned.length, updatedAt: nowIso, country });
 });
 
 app.listen(PORT, () => {
