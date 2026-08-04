@@ -48,7 +48,16 @@
 
   <div id="app">
     <div class="panel">
-      <p class="hint" style="margin-top:0;">Current live list: <span id="currentInfo">loading…</span></p>
+      <p class="hint" style="margin-top:0;">Current live data: <span id="currentInfo">loading…</span></p>
+      <label class="hint" style="display:flex; align-items:center; gap:8px; margin-bottom:14px;">
+        Which country is this update for? <span style="color:var(--amber)">*</span>
+        <select id="countrySelect" style="padding:7px 10px; border-radius:7px; border:1px solid var(--line); font-size:13px;">
+          <option value="">— select —</option>
+          <option value="Philippines">Philippines</option>
+          <option value="India">India</option>
+        </select>
+      </label>
+      <p class="hint" style="margin-top:-8px; margin-bottom:14px;">Publishing only replaces <b>this country's</b> data — the other country's list is untouched.</p>
       <div class="toolbar">
         <button class="btn" id="uploadBtn">Upload file</button>
         <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" style="display:none;">
@@ -96,8 +105,11 @@ async function refreshCurrentInfo(){
   try {
     const res = await fetch('/api/status');
     const data = await res.json();
-    const dateStr = data.updatedAt ? new Date(data.updatedAt).toLocaleString() : '—';
-    document.getElementById('currentInfo').textContent = `${data.count.toLocaleString()} items, last updated ${dateStr}`;
+    if (data.byCountry) {
+      document.getElementById('currentInfo').textContent = data.byCountry
+        .map(c => `${c.country}: ${c.count.toLocaleString()} items (updated ${c.updatedAt ? new Date(c.updatedAt).toLocaleDateString() : 'never'})`)
+        .join('  ·  ');
+    }
   } catch(e) {}
 }
 
@@ -221,6 +233,8 @@ function setStatus(msg, kind){
 }
 
 async function confirmSave(){
+  const country = document.getElementById('countrySelect').value;
+  if (!country){ setStatus('Please select which country this update is for.', 'warn'); return; }
   const { sheets, selected, headerRowBySheet, mapping } = uploadState;
   if (!mapping.id || !mapping.name){ setStatus('Please map both Item ID and Item Name before publishing.', 'warn'); return; }
   const chosen = sheets.filter(s => selected.includes(s.name));
@@ -240,17 +254,17 @@ async function confirmSave(){
     }
   }
 
-  setStatus('Publishing…', 'info');
+  setStatus(`Publishing to ${country}…`, 'info');
   try {
     const res = await fetch('/api/admin/save', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ password: ADMIN_PW, items: newItems })
+      body: JSON.stringify({ password: ADMIN_PW, country, items: newItems })
     });
     const data = await res.json();
     if (!res.ok || !data.ok){ setStatus(data.error || 'Failed to publish.', 'warn'); return; }
     const skipNote = skipped.length ? ` (${skipped.join(', ')} skipped — missing the mapped column at that header row)` : '';
-    setStatus(`Published ${data.count.toLocaleString()} items — live for everyone now${skipNote}.`, 'good');
+    setStatus(`Published ${data.count.toLocaleString()} items for ${country} — live for everyone now${skipNote}. The other country's data was not touched.`, 'good');
     uploadState = null;
     renderMapping();
     refreshCurrentInfo();

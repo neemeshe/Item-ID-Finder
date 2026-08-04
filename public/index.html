@@ -46,6 +46,17 @@
   </div>
   <p class="sub">Search by item name, description, spec, or partial ID before requesting a new item code.</p>
 
+  <div class="toolbar" style="margin-bottom:14px;">
+    <label class="hint" style="display:flex; align-items:center; gap:8px;">
+      Country:
+      <select id="countrySelect" style="padding:7px 10px; border-radius:7px; border:1px solid var(--line); font-size:13px;">
+        <option value="all">All</option>
+        <option value="Philippines">Philippines</option>
+        <option value="India">India</option>
+      </select>
+    </label>
+  </div>
+
   <div class="searchWrap">
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#5B6472" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
     <input id="searchInput" placeholder="e.g. stainless pipe 25mm, or partial item ID…">
@@ -74,15 +85,35 @@ function copyId(id, btn){
   }).catch(()=>{});
 }
 
+function copyZohoFormat(id, name, btn){
+  const combined = id + '_' + name;
+  navigator.clipboard.writeText(combined).then(() => {
+    const old = btn.innerHTML;
+    btn.innerHTML = '✓ copied';
+    setTimeout(() => { btn.innerHTML = old; }, 1200);
+  }).catch(()=>{});
+}
+
 let itemCount = 0;
+
+function currentCountry(){
+  const v = document.getElementById('countrySelect').value;
+  return v === 'all' ? '' : v;
+}
 
 async function refreshStatus(){
   try {
-    const res = await fetch('/api/status');
+    const country = currentCountry();
+    const res = await fetch('/api/status' + (country ? '?country=' + encodeURIComponent(country) : ''));
     const data = await res.json();
     itemCount = data.count;
-    const dateStr = data.updatedAt ? new Date(data.updatedAt).toLocaleDateString(undefined,{month:'short', day:'numeric', year:'numeric'}) : '—';
-    document.getElementById('statusPill').textContent = `${data.count.toLocaleString()} items · updated ${dateStr}`;
+    if (data.scope === 'all' && data.byCountry) {
+      const parts = data.byCountry.map(c => `${c.country}: ${c.count.toLocaleString()}`).join(' · ');
+      document.getElementById('statusPill').textContent = `${data.count.toLocaleString()} items total (${parts})`;
+    } else {
+      const dateStr = data.updatedAt ? new Date(data.updatedAt).toLocaleDateString(undefined,{month:'short', day:'numeric', year:'numeric'}) : '—';
+      document.getElementById('statusPill').textContent = `${data.count.toLocaleString()} items · updated ${dateStr}`;
+    }
   } catch(e) {
     document.getElementById('statusPill').textContent = 'Could not reach server';
   }
@@ -96,7 +127,9 @@ async function doSearch(query){
   }
   let results = [];
   try {
-    const res = await fetch('/api/search?q=' + encodeURIComponent(query));
+    const country = currentCountry();
+    const url = '/api/search?q=' + encodeURIComponent(query) + (country ? '&country=' + encodeURIComponent(country) : '');
+    const res = await fetch(url);
     const data = await res.json();
     results = data.results || [];
   } catch(e) {
@@ -109,11 +142,19 @@ async function doSearch(query){
   }
   area.innerHTML = results.map(r => {
     const tc = tagColors(r._tag);
+    const safeId = esc(r.id).replace(/'/g,"\\'");
+    const safeName = esc(r.name).replace(/'/g,"\\'");
     return `<div class="resultRow">
-      <button class="idBtn" onclick="copyId('${esc(r.id).replace(/'/g,"\\'")}', this)">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-        ${esc(r.id)}
-      </button>
+      <div style="display:flex; flex-direction:column; gap:4px; flex-shrink:0;">
+        <button class="idBtn" onclick="copyId('${safeId}', this)" title="Copy item ID only">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          ${esc(r.id)}
+        </button>
+        <button class="idBtn" onclick="copyZohoFormat('${safeId}', '${safeName}', this)" title="Copy as ID_Name (Zoho Books style)" style="font-size:11px; opacity:0.85;">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          ID_Name
+        </button>
+      </div>
       <div class="resultBody">
         <div class="resultName">${esc(r.name)}</div>
         ${r.description ? `<div class="resultDesc">${esc(r.description)}</div>` : ''}
@@ -132,6 +173,10 @@ document.getElementById('searchInput').addEventListener('input', (e) => {
   clearTimeout(window.__debounce);
   const v = e.target.value.trim();
   window.__debounce = setTimeout(() => doSearch(v), 200);
+});
+document.getElementById('countrySelect').addEventListener('change', () => {
+  refreshStatus();
+  doSearch(document.getElementById('searchInput').value.trim());
 });
 
 refreshStatus();
