@@ -51,7 +51,7 @@
       <p class="hint" style="margin-top:0;">Current live data: <span id="currentInfo">loading…</span></p>
       <label class="hint" style="display:flex; align-items:center; gap:8px; margin-bottom:14px;">
         Which country is this update for? <span style="color:var(--amber)">*</span>
-        <select id="countrySelect" style="padding:7px 10px; border-radius:7px; border:1px solid var(--line); font-size:13px;">
+        <select id="countrySelect" onchange="onModeChange()" style="padding:7px 10px; border-radius:7px; border:1px solid var(--line); font-size:13px;">
           <option value="">— select —</option>
           <option value="Philippines">Philippines</option>
           <option value="India">India</option>
@@ -158,6 +158,8 @@ function renderMapping(){
   const area = document.getElementById('mappingArea');
   if (!uploadState){ area.innerHTML=''; return; }
   const { sheets, selected, headerRowBySheet, mapping } = uploadState;
+  const countrySelectEl = document.getElementById('countrySelect');
+  const country = countrySelectEl ? countrySelectEl.value : '';
   const multiSheet = sheets.length > 1;
   const chosen = sheets.filter(s => selected.includes(s.name));
   const totalRows = chosen.reduce((n,s) => n + getDataRows(s, headerRowBySheet[s.name]).length, 0);
@@ -197,11 +199,29 @@ function renderMapping(){
       ${sheetListHtml}
     </div>
     <div class="mapGrid">${fieldSelectsHtml}</div>
+    <div style="border:1px solid var(--line); border-radius:8px; padding:12px; margin-bottom:14px;">
+      <div style="font-size:13px; font-weight:600; margin-bottom:8px;">How should this be published?</div>
+      <label style="display:flex; align-items:flex-start; gap:8px; font-size:13px; margin-bottom:8px; cursor:pointer;">
+        <input type="radio" name="saveMode" value="merge" checked onchange="onModeChange()" style="margin-top:3px;">
+        <span><b>Add / update items</b> (safe, recommended) — new IDs get added, matching IDs get updated. Everything else already live is left alone.</span>
+      </label>
+      <label style="display:flex; align-items:flex-start; gap:8px; font-size:13px; cursor:pointer;">
+        <input type="radio" name="saveMode" value="replace" onchange="onModeChange()" style="margin-top:3px;">
+        <span><b>Replace the entire ${country || 'selected country'} list</b> — anything currently live that isn't in this upload gets deleted. Only use this for a deliberate full refresh.</span>
+      </label>
+      <div id="replaceWarning" style="display:none; margin-top:10px;">
+        <div class="statusMsg statusWarn" id="replaceWarningText">Loading current count…</div>
+        <label style="display:flex; align-items:center; gap:8px; font-size:13px; margin-top:8px; cursor:pointer;">
+          <input type="checkbox" id="confirmReplaceBox"> I understand this may delete existing items and want to proceed anyway.
+        </label>
+      </div>
+    </div>
     <div class="toolbar">
       <button class="btn" onclick="confirmSave()">Publish ${totalRows.toLocaleString()} rows live</button>
       <button class="btnGhost" onclick="cancelUpload()">Cancel</button>
     </div>
   `;
+  onModeChange();
 }
 
 function toggleSheet(name){
@@ -225,6 +245,24 @@ function setHeaderRow(name, value){
   renderMapping();
 }
 function setMappingField(field, value){ uploadState.mapping[field] = value; }
+async function onModeChange(){
+  const mode = document.querySelector('input[name="saveMode"]:checked')?.value || 'merge';
+  const warningBox = document.getElementById('replaceWarning');
+  if (!warningBox) return; // mapping not rendered yet
+  if (mode !== 'replace'){ warningBox.style.display = 'none'; return; }
+  warningBox.style.display = 'block';
+  const country = document.getElementById('countrySelect').value;
+  const textEl = document.getElementById('replaceWarningText');
+  if (!country){ textEl.textContent = 'Select a country above first.'; return; }
+  try {
+    const res = await fetch('/api/status?country=' + encodeURIComponent(country));
+    const data = await res.json();
+    textEl.textContent = `Warning: ${country} currently has ${data.count.toLocaleString()} live items. Anything among those NOT included in this upload will be permanently removed.`;
+  } catch(e){
+    textEl.textContent = 'Warning: could not check the current live count — proceed with caution.';
+  }
+}
+
 function cancelUpload(){ uploadState = null; renderMapping(); setStatus('', 'info'); }
 
 function setStatus(msg, kind){
@@ -236,6 +274,14 @@ function setStatus(msg, kind){
 async function confirmSave(){
   const country = document.getElementById('countrySelect').value;
   if (!country){ setStatus('Please select which country this update is for.', 'warn'); return; }
+  const mode = document.querySelector('input[name="saveMode"]:checked')?.value || 'merge';
+  if (mode === 'replace'){
+    const confirmBox = document.getElementById('confirmReplaceBox');
+    if (!confirmBox || !confirmBox.checked){
+      setStatus('Please check the confirmation box to proceed with a full replace, or switch to "Add / update items."', 'warn');
+      return;
+    }
+  }
   const { sheets, selected, headerRowBySheet, mapping } = uploadState;
   if (!mapping.id || !mapping.name){ setStatus('Please map both Item ID and Item Name before publishing.', 'warn'); return; }
   const chosen = sheets.filter(s => selected.includes(s.name));
@@ -260,12 +306,15 @@ async function confirmSave(){
     const res = await fetch('/api/admin/save', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ password: ADMIN_PW, country, items: newItems })
+      body: JSON.stringify({ password: ADMIN_PW, country, items: newItems, mode })
     });
     const data = await res.json();
     if (!res.ok || !data.ok){ setStatus(data.error || 'Failed to publish.', 'warn'); return; }
     const skipNote = skipped.length ? ` (${skipped.join(', ')} skipped — missing the mapped column at that header row)` : '';
-    setStatus(`Published ${data.count.toLocaleString()} items for ${country} — live for everyone now${skipNote}. The other country's data was not touched.`, 'good');
+    const modeNote = data.mode === 'replace'
+      ? ` Replaced the full list: ${data.previousCount.toLocaleString()} → ${data.count.toLocaleString()} items (${data.removedCount} removed).`
+      : ` Added/updated ${data.incomingCount.toLocaleString()} item(s) — ${data.count.toLocaleString()} total now live, nothing else removed.`;
+    setStatus(`Published for ${country}.${modeNote}${skipNote}`, 'good');
     uploadState = null;
     renderMapping();
     refreshCurrentInfo();

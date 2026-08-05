@@ -144,13 +144,16 @@ app.post('/api/admin/login', (req, res) => {
   else res.status(401).json({ ok: false, error: 'Incorrect password' });
 });
 
-// Admin: replace ONLY the given country's items, leaving the other country's data untouched.
-// Expects { password, country, items: [{id,name,description,category,uom,sheet}] }
+// Admin: update the given country's items.
+// mode 'merge' (default): upsert by id — new/changed items are added or updated, everything else for that country is left untouched.
+// mode 'replace': wipes this country's list and uses ONLY what's in this batch. Meant for deliberate full refreshes.
+// Expects { password, country, items: [...], mode }
 app.post('/api/admin/save', (req, res) => {
-  const { password, country, items } = req.body || {};
+  const { password, country, items, mode } = req.body || {};
   if (password !== ADMIN_PASSWORD) return res.status(401).json({ ok: false, error: 'Incorrect password' });
   if (!COUNTRIES.includes(country)) return res.status(400).json({ ok: false, error: `country must be one of: ${COUNTRIES.join(', ')}` });
   if (!Array.isArray(items)) return res.status(400).json({ ok: false, error: 'items must be an array' });
+  const saveMode = mode === 'replace' ? 'replace' : 'merge';
 
   const cleaned = items
     .map(it => ({
@@ -166,11 +169,33 @@ app.post('/api/admin/save', (req, res) => {
     .filter(it => it.id);
 
   const nowIso = new Date().toISOString();
-  // keep every item NOT belonging to this country, replace this country's items with the new batch
-  store.items = store.items.filter(it => it.country !== country).concat(cleaned);
+  const otherCountries = store.items.filter(it => it.country !== country);
+  const existingForCountry = store.items.filter(it => it.country === country);
+
+  let finalForCountry;
+  let removedCount = 0;
+  if (saveMode === 'replace') {
+    finalForCountry = cleaned;
+    removedCount = existingForCountry.filter(ex => !cleaned.some(c => c.id === ex.id)).length;
+  } else {
+    const byId = new Map(existingForCountry.map(it => [it.id, it]));
+    for (const it of cleaned) byId.set(it.id, it); // upsert: add new, overwrite matching id
+    finalForCountry = Array.from(byId.values());
+  }
+
+  store.items = otherCountries.concat(finalForCountry);
   store.updatedByCountry[country] = nowIso;
   saveData(store);
-  res.json({ ok: true, count: cleaned.length, updatedAt: nowIso, country });
+  res.json({
+    ok: true,
+    mode: saveMode,
+    count: finalForCountry.length,
+    incomingCount: cleaned.length,
+    previousCount: existingForCountry.length,
+    removedCount,
+    updatedAt: nowIso,
+    country,
+  });
 });
 
 app.listen(PORT, () => {
